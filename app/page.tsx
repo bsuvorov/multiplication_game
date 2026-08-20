@@ -34,6 +34,16 @@ const WORD_NUMBERS: Record<string, number> = {
   hundred: 100,
 };
 
+// Multiplying by 1 teaches nothing, so both factors start at 2.
+const ALL_TABLES = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+const MIN_FACTOR = 2;
+const MAX_FACTOR = 10;
+
+// Facts the child has already missed come back with a little more thinking time.
+const TROUBLE_BONUS_SECONDS = 2;
+
+const factKey = (a: number, b: number) => `${a}x${b}`;
+
 const ANSWER_LIMIT_CHOICES = [3, 5, 8, 12];
 const ANSWER_LIMIT_DEFAULT = 3;
 const ANSWER_LIMIT_KEY = "times-table-trail:answer-seconds";
@@ -112,14 +122,16 @@ function say(text: string, afterSpeaking?: () => void) {
 
 export default function Home() {
   const [minutes, setMinutes] = useState(5);
-  const [tables, setTables] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  const [tables, setTables] = useState<number[]>(ALL_TABLES);
   const [stage, setStage] = useState<"welcome" | "playing" | "result">("welcome");
   const [timeLeft, setTimeLeft] = useState(0);
   const [question, setQuestion] = useState({ a: 5, b: 7 });
+  const [reveal, setReveal] = useState<{ value: number; correct: boolean } | null>(null);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [message, setMessage] = useState("Pick a practice time, then press Start!");
   const [listening, setListening] = useState(false);
   const [answerSeconds, setAnswerSeconds] = useState(ANSWER_LIMIT_DEFAULT);
+  const [answerTotal, setAnswerTotal] = useState(ANSWER_LIMIT_DEFAULT);
   const answerLimit = useSyncExternalStore(subscribeAnswerLimit, readAnswerLimit, () => ANSWER_LIMIT_DEFAULT);
   const recognition = useRef<SpeechRecognitionLike | null>(null);
   const questionRef = useRef(question);
@@ -128,6 +140,7 @@ export default function Home() {
   const listenRef = useRef<() => void>(() => {});
   const resolvingAnswer = useRef(false);
   const reviewQueue = useRef<Array<{ a: number; b: number; due: number }>>([]);
+  const troubleFacts = useRef<Set<string>>(new Set());
   const askedCount = useRef(0);
 
   const clearAnswerTimer = useCallback(() => {
@@ -143,7 +156,11 @@ export default function Home() {
     const skipped = isSkipResponse(heard);
     const correct = !skipped && spokenNumbers(heard).includes(a * b);
     setFacts((old) => [...old, { a, b, correct, heard }]);
-    if (!correct) reviewQueue.current.push({ a, b, due: askedCount.current + 3 });
+    setReveal({ value: a * b, correct });
+    if (!correct) {
+      reviewQueue.current.push({ a, b, due: askedCount.current + 3 });
+      troubleFacts.current.add(factKey(a, b));
+    }
     setListening(false);
     let feedback = "";
     if (correct) {
@@ -209,24 +226,31 @@ export default function Home() {
       settle(heardSoFar);
     };
     instance.onend = () => setListening(false);
-    setAnswerSeconds(answerLimit);
+    const { a, b } = questionRef.current;
+    const tricky = troubleFacts.current.has(factKey(a, b));
+    const limit = answerLimit + (tricky ? TROUBLE_BONUS_SECONDS : 0);
+    setAnswerTotal(limit);
+    setAnswerSeconds(limit);
     setListening(true);
-    setMessage(`I’m listening… you have ${answerLimit} seconds!`);
+    setMessage(tricky
+      ? `This one is tricky — take ${limit} seconds!`
+      : `I’m listening… you have ${limit} seconds!`);
     instance.start();
     answerTimer.current = window.setTimeout(() => {
       instance.stop();
       answerTimer.current = window.setTimeout(() => settle(heardSoFar), 500);
-    }, answerLimit * 1000);
+    }, limit * 1000);
   }, [answerLimit, clearAnswerTimer, submitAnswer]);
 
   listenRef.current = listen;
 
   const nextQuestion = useCallback(() => {
     resolvingAnswer.current = false;
+    setReveal(null);
     askedCount.current += 1;
     const randomFact = () => ({
       a: tables[Math.floor(Math.random() * tables.length)],
-      b: Math.floor(Math.random() * 10) + 1,
+      b: Math.floor(Math.random() * (MAX_FACTOR - MIN_FACTOR + 1)) + MIN_FACTOR,
     });
     const review = reviewQueue.current[0];
     let next: { a: number; b: number };
@@ -275,7 +299,9 @@ export default function Home() {
 
   function start() {
     setFacts([]);
+    setReveal(null);
     reviewQueue.current = [];
+    troubleFacts.current = new Set();
     askedCount.current = 0;
     setTimeLeft(minutes * 60);
     setStage("playing");
@@ -283,7 +309,7 @@ export default function Home() {
   }
 
   function toggleTable(table: number) {
-    setTables((current) => current.length === 10 ? [table] : current.includes(table)
+    setTables((current) => current.length === ALL_TABLES.length ? [table] : current.includes(table)
       ? current.length === 1 ? current : current.filter((value) => value !== table)
       : [...current, table].sort((a, b) => a - b));
   }
@@ -298,7 +324,7 @@ export default function Home() {
   return (
     <main>
       <section className="app-shell">
-        <header><div className="brand"><span>✦</span> Times Table Trail</div><div className="badge">1–10 practice</div></header>
+        <header><div className="brand"><span>✦</span> Times Table Trail</div><div className="badge">2–10 practice</div></header>
         {stage === "welcome" && <div className="welcome card">
           <div className="mascot" aria-hidden="true">🦊</div>
           <p className="eyebrow">VOICE PRACTICE ADVENTURE</p>
@@ -308,10 +334,10 @@ export default function Home() {
             {[5, 10].map((time) => <button key={time} className={minutes === time ? "selected" : ""} onClick={() => setMinutes(time)}>{time} minutes</button>)}
           </div>
           <div className="table-picker">
-            <div className="table-picker-title"><strong>Choose your tables</strong><button onClick={() => setTables([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])}>All tables</button></div>
+            <div className="table-picker-title"><strong>Choose your tables</strong><button onClick={() => setTables(ALL_TABLES)}>All tables</button></div>
             <p>Tap a table to focus on it, then tap another to add it. For example: 2s and 5s.</p>
             <div className="table-grid" aria-label="Choose multiplication tables">
-              {Array.from({ length: 10 }, (_, index) => index + 1).map((table) => <button key={table} className={tables.includes(table) ? "selected" : ""} onClick={() => toggleTable(table)} aria-pressed={tables.includes(table)}>{table}×</button>)}
+              {ALL_TABLES.map((table) => <button key={table} className={tables.includes(table) ? "selected" : ""} onClick={() => toggleTable(table)} aria-pressed={tables.includes(table)}>{table}×</button>)}
             </div>
           </div>
           <div className="answer-picker">
@@ -326,9 +352,9 @@ export default function Home() {
         </div>}
         {stage === "playing" && <div className="practice card">
           <div className="practice-top"><div><p className="eyebrow">QUESTION {total + 1}</p><p className="cheer">Keep going, star!</p></div><div className="timer">⏱ {Math.floor(timeLeft / 60)}:{seconds}</div></div>
-          <div className="problem"><span>{question.a}</span><b>×</b><span>{question.b}</span><b>=</b><i>?</i></div>
+          <div className="problem"><span>{question.a}</span><b>×</b><span>{question.b}</span><b>=</b><i className={reveal ? `revealed ${reveal.correct ? "right" : "wrong"}` : ""} aria-live="polite">{reveal ? reveal.value : "?"}</i></div>
           <p className="prompt">{message}{listening && <span className="answer-countdown"> {answerSeconds}</span>}</p>
-          {listening && <div className="answer-progress" aria-label={`${answerSeconds} seconds remaining`}><span style={{ width: `${(answerSeconds / answerLimit) * 100}%` }} /></div>}
+          {listening && <div className="answer-progress" aria-label={`${answerSeconds} seconds remaining`}><span style={{ width: `${(answerSeconds / answerTotal) * 100}%` }} /></div>}
           <button className={`mic ${listening ? "listening" : ""}`} onClick={listen} aria-label="Answer with your voice">{listening ? "◉" : "🎙"}</button>
           <button className="repeat" onClick={() => say(`${question.a} multiplied by ${question.b}. What is the answer?`, listen)}>🔊 Hear it again</button>
           <button className="finish" onClick={finish}>Finish early</button>
