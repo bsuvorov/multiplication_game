@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 type Fact = { a: number; b: number; correct: boolean; heard: string };
 
@@ -33,6 +33,43 @@ const WORD_NUMBERS: Record<string, number> = {
   forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
   hundred: 100,
 };
+
+const ANSWER_LIMIT_CHOICES = [3, 5, 8, 12];
+const ANSWER_LIMIT_DEFAULT = 3;
+const ANSWER_LIMIT_KEY = "times-table-trail:answer-seconds";
+
+// The saved answer time lives outside React so the prerendered HTML always
+// renders the default and only the browser reads back the child's choice.
+const answerLimitListeners = new Set<() => void>();
+let answerLimitCache: number | null = null;
+
+function readAnswerLimit() {
+  if (answerLimitCache === null) {
+    let stored = NaN;
+    try {
+      stored = Number(window.localStorage.getItem(ANSWER_LIMIT_KEY));
+    } catch {
+      // Storage can be blocked (private browsing); fall back to the default.
+    }
+    answerLimitCache = ANSWER_LIMIT_CHOICES.includes(stored) ? stored : ANSWER_LIMIT_DEFAULT;
+  }
+  return answerLimitCache;
+}
+
+function writeAnswerLimit(limit: number) {
+  answerLimitCache = limit;
+  try {
+    window.localStorage.setItem(ANSWER_LIMIT_KEY, String(limit));
+  } catch {
+    // Storage can be blocked; the choice still applies for this session.
+  }
+  answerLimitListeners.forEach((notify) => notify());
+}
+
+function subscribeAnswerLimit(notify: () => void) {
+  answerLimitListeners.add(notify);
+  return () => { answerLimitListeners.delete(notify); };
+}
 
 function spokenNumbers(text: string) {
   const candidates = (text.match(/\d+/g) ?? []).map(Number);
@@ -82,7 +119,8 @@ export default function Home() {
   const [facts, setFacts] = useState<Fact[]>([]);
   const [message, setMessage] = useState("Pick a practice time, then press Start!");
   const [listening, setListening] = useState(false);
-  const [answerSeconds, setAnswerSeconds] = useState(3);
+  const [answerSeconds, setAnswerSeconds] = useState(ANSWER_LIMIT_DEFAULT);
+  const answerLimit = useSyncExternalStore(subscribeAnswerLimit, readAnswerLimit, () => ANSWER_LIMIT_DEFAULT);
   const recognition = useRef<SpeechRecognitionLike | null>(null);
   const questionRef = useRef(question);
   const answerTimer = useRef<number | null>(null);
@@ -171,15 +209,15 @@ export default function Home() {
       settle(heardSoFar);
     };
     instance.onend = () => setListening(false);
-    setAnswerSeconds(3);
+    setAnswerSeconds(answerLimit);
     setListening(true);
-    setMessage("I’m listening… you have 3 seconds!");
+    setMessage(`I’m listening… you have ${answerLimit} seconds!`);
     instance.start();
     answerTimer.current = window.setTimeout(() => {
       instance.stop();
       answerTimer.current = window.setTimeout(() => settle(heardSoFar), 500);
-    }, 3000);
-  }, [clearAnswerTimer, submitAnswer]);
+    }, answerLimit * 1000);
+  }, [answerLimit, clearAnswerTimer, submitAnswer]);
 
   listenRef.current = listen;
 
@@ -276,6 +314,13 @@ export default function Home() {
               {Array.from({ length: 10 }, (_, index) => index + 1).map((table) => <button key={table} className={tables.includes(table) ? "selected" : ""} onClick={() => toggleTable(table)} aria-pressed={tables.includes(table)}>{table}×</button>)}
             </div>
           </div>
+          <div className="answer-picker">
+            <div className="answer-picker-title"><strong>Thinking time</strong><span>{answerLimit} seconds</span></div>
+            <p>How long do you get to say each answer? Pick more seconds if you need extra time to think.</p>
+            <div className="answer-grid" aria-label="Choose how many seconds you get to answer">
+              {ANSWER_LIMIT_CHOICES.map((limit) => <button key={limit} className={answerLimit === limit ? "selected" : ""} onClick={() => writeAnswerLimit(limit)} aria-pressed={answerLimit === limit}>{limit}s</button>)}
+            </div>
+          </div>
           <button className="start" onClick={start}>Start my adventure <span>→</span></button>
           <p className="tiny">Best with your sound on. The microphone will switch on after every question.</p>
         </div>}
@@ -283,7 +328,7 @@ export default function Home() {
           <div className="practice-top"><div><p className="eyebrow">QUESTION {total + 1}</p><p className="cheer">Keep going, star!</p></div><div className="timer">⏱ {Math.floor(timeLeft / 60)}:{seconds}</div></div>
           <div className="problem"><span>{question.a}</span><b>×</b><span>{question.b}</span><b>=</b><i>?</i></div>
           <p className="prompt">{message}{listening && <span className="answer-countdown"> {answerSeconds}</span>}</p>
-          {listening && <div className="answer-progress" aria-label={`${answerSeconds} seconds remaining`}><span style={{ width: `${(answerSeconds / 3) * 100}%` }} /></div>}
+          {listening && <div className="answer-progress" aria-label={`${answerSeconds} seconds remaining`}><span style={{ width: `${(answerSeconds / answerLimit) * 100}%` }} /></div>}
           <button className={`mic ${listening ? "listening" : ""}`} onClick={listen} aria-label="Answer with your voice">{listening ? "◉" : "🎙"}</button>
           <button className="repeat" onClick={() => say(`${question.a} multiplied by ${question.b}. What is the answer?`, listen)}>🔊 Hear it again</button>
           <button className="finish" onClick={finish}>Finish early</button>
